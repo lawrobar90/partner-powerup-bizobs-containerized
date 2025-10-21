@@ -1,10 +1,11 @@
-# Use Node.js LTS as base image
-FROM node:18-alpine
+FROM node:18-slim
 
-# Set working directory
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Copy package files
+# Copy package files first for better caching
 COPY package*.json ./
 
 # Install dependencies
@@ -13,19 +14,15 @@ RUN npm install --production
 # Copy application code
 COPY . .
 
-# Create directory for dynamic services
-RUN mkdir -p services/.dynamic-runners
+# Create logs directory
+RUN mkdir -p logs
 
-# Expose port
-EXPOSE 4000
-
-# Set environment variables
-ENV NODE_ENV=production
-ENV PORT=4000
+# Expose the application port
+EXPOSE 8080
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:4000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:4000/health || exit 1
 
 # Start the application
 CMD ["npm", "start"]

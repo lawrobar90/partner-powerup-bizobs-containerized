@@ -1336,7 +1336,8 @@ router.post('/simulate-batch-chained', async (req, res) => {
 
     // Identify first step and its port
     const first = errorPlannedSteps[0];
-    const firstPort = await getServicePort(first.stepName, companyName);
+    const firstServiceInfo = await ensureServiceRunning(first.stepName, { companyName, domain, industryType });
+    const firstPort = firstServiceInfo.port || firstServiceInfo;
 
     for (let i = 0; i < Number(customers || 0); i++) {
       try {

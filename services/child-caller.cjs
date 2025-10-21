@@ -52,83 +52,140 @@ function getServicePortFromStep(stepNameOrServiceName) {
 
 function callService(serviceName, payload, headers = {}, overridePort) {
   return new Promise((resolve, reject) => {
-    // Use overridePort if provided, else hash-based mapping
-    const port = overridePort || getServicePortFromStep(serviceName) || SERVICE_PORTS[serviceName];
-    if (!port) return reject(new Error(`Unknown service: ${serviceName}`));
+    // PRIORITY 1: Use overridePort if provided
+    // PRIORITY 2: Check if we can get the port from the service manager
+    // PRIORITY 3: Fall back to hash-based mapping
+    let port = overridePort;
     
-    // Prepare headers with proper Dynatrace trace propagation
-    const requestHeaders = { 'Content-Type': 'application/json' };
-    
-    // Add custom journey headers
-    if (payload) {
-      if (payload.journeyId) requestHeaders['x-journey-id'] = payload.journeyId;
-      if (payload.stepName) requestHeaders['x-journey-step'] = payload.stepName;
-      if (payload.domain) requestHeaders['x-customer-segment'] = payload.domain;
-      if (payload.correlationId) requestHeaders['x-correlation-id'] = payload.correlationId;
+    if (!port) {
+      // Try to get port from running service registry via HTTP call to main server
+      // This is a synchronous fallback - in production this should be redesigned
+      try {
+        const http = require('http');
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: 4000,
+          path: '/api/admin/services/status',
+          method: 'GET',
+          timeout: 1000
+        }, (res) => {
+          let body = '';
+          res.on('data', (chunk) => body += chunk);
+          res.on('end', () => {
+            try {
+              const status = JSON.parse(body);
+              if (status.services) {
+                const runningService = status.services.find(s => s.service === serviceName);
+                if (runningService) {
+                  port = runningService.port;
+                  console.log(`🔍 [child-caller] Found running service ${serviceName} on port ${port}`);
+                  makeRequest();
+                  return;
+                }
+              }
+            } catch (e) {
+              console.log(`⚠️ [child-caller] Could not parse service status, using fallback for ${serviceName}`);
+            }
+            // Fallback to hash-based or hardcoded mapping
+            port = getServicePortFromStep(serviceName) || SERVICE_PORTS[serviceName];
+            if (!port) return reject(new Error(`Unknown service: ${serviceName}`));
+            makeRequest();
+          });
+        });
+        
+        req.on('error', () => {
+          // Fallback to hash-based or hardcoded mapping
+          port = getServicePortFromStep(serviceName) || SERVICE_PORTS[serviceName];
+          if (!port) return reject(new Error(`Unknown service: ${serviceName}`));
+          makeRequest();
+        });
+        
+        req.end();
+        return; // Exit here, makeRequest will be called asynchronously
+      } catch (e) {
+        // Fallback to hash-based or hardcoded mapping
+        port = getServicePortFromStep(serviceName) || SERVICE_PORTS[serviceName];
+        if (!port) return reject(new Error(`Unknown service: ${serviceName}`));
+      }
     }
     
-    // CRITICAL: Add Dynatrace trace propagation headers
-    // Use W3C Trace Context format for proper distributed tracing
-    if (payload && payload.traceId && payload.spanId) {
-      // W3C traceparent format: version-trace_id-parent_id-trace_flags
-      const traceId32 = payload.traceId.replace(/-/g, '').substring(0, 32).padEnd(32, '0');
-      const spanId16 = payload.spanId.replace(/-/g, '').substring(0, 16).padEnd(16, '0');
-      requestHeaders['traceparent'] = `00-${traceId32}-${spanId16}-01`;
+    makeRequest();
+    
+    function makeRequest() {
+      // Prepare headers with proper Dynatrace trace propagation
+      const requestHeaders = { 'Content-Type': 'application/json' };
       
-      // Also add Dynatrace-specific headers for better compatibility
-      requestHeaders['x-dynatrace-trace-id'] = traceId32;
-      requestHeaders['x-dynatrace-parent-span-id'] = spanId16;
-    }
-    
-    // Pass through any existing trace headers from incoming request
-    if (headers) {
-      Object.keys(headers).forEach(key => {
-        const lowerKey = key.toLowerCase();
-        if (lowerKey === 'traceparent' || 
-            lowerKey === 'tracestate' ||
-            lowerKey.startsWith('x-dynatrace') ||
-            lowerKey.includes('trace') ||
-            lowerKey.includes('span')) {
-          requestHeaders[key] = headers[key];
-        }
+      // Add custom journey headers
+      if (payload) {
+        if (payload.journeyId) requestHeaders['x-journey-id'] = payload.journeyId;
+        if (payload.stepName) requestHeaders['x-journey-step'] = payload.stepName;
+        if (payload.domain) requestHeaders['x-customer-segment'] = payload.domain;
+        if (payload.correlationId) requestHeaders['x-correlation-id'] = payload.correlationId;
+      }
+      
+      // CRITICAL: Add Dynatrace trace propagation headers
+      // Use W3C Trace Context format for proper distributed tracing
+      if (payload && payload.traceId && payload.spanId) {
+        // W3C traceparent format: version-trace_id-parent_id-trace_flags
+        const traceId32 = payload.traceId.replace(/-/g, '').substring(0, 32).padEnd(32, '0');
+        const spanId16 = payload.spanId.replace(/-/g, '').substring(0, 16).padEnd(16, '0');
+        requestHeaders['traceparent'] = `00-${traceId32}-${spanId16}-01`;
+        
+        // Also add Dynatrace-specific headers for better compatibility
+        requestHeaders['x-dynatrace-trace-id'] = traceId32;
+        requestHeaders['x-dynatrace-parent-span-id'] = spanId16;
+      }
+      
+      // Pass through any existing trace headers from incoming request
+      if (headers) {
+        Object.keys(headers).forEach(key => {
+          const lowerKey = key.toLowerCase();
+          if (lowerKey === 'traceparent' || 
+              lowerKey === 'tracestate' ||
+              lowerKey.startsWith('x-dynatrace') ||
+              lowerKey.includes('trace') ||
+              lowerKey.includes('span')) {
+            requestHeaders[key] = headers[key];
+          }
+        });
+      }
+      
+      const options = {
+        hostname: '127.0.0.1',
+        port,
+        path: '/process',
+        method: 'POST',
+        headers: requestHeaders
+      };
+      
+      console.log(`🔗 [${serviceName}] Calling service on port ${port} with Dynatrace headers:`, 
+        Object.keys(requestHeaders).filter(k => 
+          k.toLowerCase().includes('trace') || 
+          k.toLowerCase().includes('span') || 
+          k.toLowerCase().includes('dynatrace')
+        ));
+      
+      const req = http.request(options, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (body += c));
+        res.on('end', () => {
+          try { 
+            const result = body ? JSON.parse(body) : {};
+            console.log(`✅ [${serviceName}] Service call completed with trace propagation`);
+            resolve(result); 
+          } catch (e) { 
+            console.error(`❌ [${serviceName}] Failed to parse response:`, e.message);
+            reject(e); 
+          }
+        });
       });
-    }
-    
-    const options = {
-      hostname: '127.0.0.1',
-      port,
-      path: '/process',
-      method: 'POST',
-      headers: requestHeaders
-    };
-    
-    console.log(`🔗 [${serviceName}] Calling service on port ${port} with Dynatrace headers:`, 
-      Object.keys(requestHeaders).filter(k => 
-        k.toLowerCase().includes('trace') || 
-        k.toLowerCase().includes('span') || 
-        k.toLowerCase().includes('dynatrace')
-      ));
-    
-    const req = http.request(options, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => (body += c));
-      res.on('end', () => {
-        try { 
-          const result = body ? JSON.parse(body) : {};
-          console.log(`✅ [${serviceName}] Service call completed with trace propagation`);
-          resolve(result); 
-        } catch (e) { 
-          console.error(`❌ [${serviceName}] Failed to parse response:`, e.message);
-          reject(e); 
-        }
+      req.on('error', (err) => {
+        console.error(`❌ [${serviceName}] Service call failed:`, err.message);
+        reject(err);
       });
-    });
-    req.on('error', (err) => {
-      console.error(`❌ [${serviceName}] Service call failed:`, err.message);
-      reject(err);
-    });
-    req.end(JSON.stringify(payload || {}));
+      req.end(JSON.stringify(payload || {}));
+    }
   });
 }
 

@@ -4,7 +4,8 @@ metadata:
   name: bizobs-app-ingress
   namespace: bizobs
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   rules:
   - host: bizobs.db520973-99cc-4fa8-bf3d-5a128e32e7c5.dynatrace.training
