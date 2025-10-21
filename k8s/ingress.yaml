@@ -1,13 +1,13 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: bizobs-ingress
+  name: bizobs-app-ingress
   namespace: bizobs
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   rules:
-  - host: bizobs.TRAINING_SESSION_ID.dynatrace.training
+  - host: bizobs.db520973-99cc-4fa8-bf3d-5a128e32e7c5.dynatrace.training
     http:
       paths:
       - path: /
@@ -16,4 +16,4 @@ spec:
           service:
             name: bizobs-app-service
             port:
-              number: 80
+              number: 4000
