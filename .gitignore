@@ -1,0 +1,44 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-error.log*
+yarn-debug.log*
+.npm
+package-lock.json
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Logs
+*.log
+logs/
+nohup.out
+
+# Runtime artifacts
+*.pid
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Build outputs
+dist/
+build/
+out/
+coverage/
+
+# OS files
+Thumbs.db
+ehthumbs.db
+
+# Temporary files
+temp/
+tmp/
+*-backup/
