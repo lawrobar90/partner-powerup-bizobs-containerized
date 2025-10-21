@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bizobs-app-config
+  namespace: bizobs
+data:
+  NODE_ENV: "production"
+  PORT: "4000"
+  DT_SERVICE_NAME: "BizObs-MainServer"
+  DT_APPLICATION_NAME: "BizObs-CustomerJourney"
+  DT_TAGS: "app=BizObs environment=production company=acebox"
+  DT_CUSTOM_PROP: "deployment=acebox;demo=partner-powerup"

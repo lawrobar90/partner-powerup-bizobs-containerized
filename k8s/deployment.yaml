@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bizobs-app
+  namespace: bizobs
+  labels:
+    app: bizobs-app
+    component: main-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bizobs-app
+  template:
+    metadata:
+      labels:
+        app: bizobs-app
+        component: main-server
+    spec:
+      containers:
+      - name: bizobs
+        image: bizobs-app:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 4000
+          name: http
+        envFrom:
+        - configMapRef:
+            name: bizobs-app-config
+        volumeMounts:
+        - name: logs-volume
+          mountPath: /app/logs
+        - name: localtime
+          mountPath: /etc/localtime
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 4000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: logs-volume
+        persistentVolumeClaim:
+          claimName: bizobs-app-logs
+      - name: localtime
+        hostPath:
+          path: /etc/localtime
+      restartPolicy: Always
