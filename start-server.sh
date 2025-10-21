@@ -417,7 +417,7 @@ echo ""
 print_step "8. Service Health Check"
 SERVER_IP=$(get_server_ip)
 EXTERNAL_URL="https://bizobs.${TRAINING_SESSION_ID}.dynatrace.training"
-BASE_URL="http://$SERVER_IP:30000"
+BASE_URL="http://$SERVER_IP:30080"
 HEALTH_URL="$BASE_URL$HEALTH_ENDPOINT"
 
 wait_for_service "$HEALTH_URL"
