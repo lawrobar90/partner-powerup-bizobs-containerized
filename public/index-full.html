@@ -252,7 +252,7 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
             <button id="run-chained-flow" onclick="runDistributedFlow()" class="bg-dtblue hover:bg-dtcyan text-black font-semibold rounded-lg p-3 shadow-card transition-all">🔗 Run Distributed Flow</button>
             <button id="run-full-chain" onclick="runFullChain()" class="bg-dtpurple hover:bg-dtcyan text-white font-semibold rounded-lg p-3 shadow-card transition-all">⚡ Run Full Chain</button>
             <button id="run-true-chain" onclick="runTrueDistributedChain()" class="bg-dtgreen hover:bg-dtcyan text-black font-semibold rounded-lg p-3 shadow-card transition-all">🌊 True Chain Flow</button>
-            <button id="reset-ports" onclick="resetServices()" class="bg-dtgray text-white font-semibold rounded-lg p-3 border border-dtcyan shadow-card hover:bg-dtpurple transition-all">🔄 Reset Services</button>
+            <button id="reset-ports" onclick="resetServices()" class="bg-dtgray text-white font-semibold rounded-lg p-3 border border-dtcyan shadow-card hover:bg-dtpurple transition-all">🔄 Full Reset for New Customer</button>
           </div>
           <div id="chain-status" class="mt-2 text-sm text-dtyellow"></div>
           <pre id="chained-trace-output" class="mt-2 text-xs bg-black p-3 rounded overflow-auto max-h-60"></pre>
@@ -1883,7 +1883,7 @@ Respond with this EXACT JSON structure:\n{\n  "journey": {\n    "companyName": "
 
       // Update button text to show they're ready
       runChainedBtnLocal.innerHTML = '🔗 Run Distributed Flow (Ready)';
-      runJourneySimBtnLocal.innerHTML = '🚀 Run Journey Simulation (Ready)';
+      runJourneySimBtnLocal.innerHTML = '🚀 Running Journey Simulation (Ready)';
 
       console.log('Flow buttons are now enabled and ready! (safe mode)');
 

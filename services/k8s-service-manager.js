@@ -489,6 +489,107 @@ export async function getK8sServiceHealth(serviceName) {
   }
 }
 
+/**
+ * Reset all dynamic Kubernetes services (comprehensive cleanup)
+ * @returns {Promise<Object>} - Reset results
+ */
+export async function resetAllK8sServices() {
+  console.log('[k8s-service-manager] 🧹 Starting comprehensive reset of all dynamic services...');
+  
+  const resetResults = {
+    startTime: new Date().toISOString(),
+    servicesRemoved: 0,
+    deploymentsRemoved: 0,
+    errors: [],
+    details: []
+  };
+
+  try {
+    // Get all deployments with our service labels
+    const deploymentsApi = kc.makeApiClient(k8s.AppsV1Api);
+    const coreApi = kc.makeApiClient(k8s.CoreV1Api);
+
+    // List all deployments in our namespace with bizobs labels
+    const deploymentResponse = await deploymentsApi.listNamespacedDeployment({
+      namespace: NAMESPACE,
+      labelSelector: 'bizobs.service/type=dynamic'
+    });
+
+    const deploymentsToDelete = deploymentResponse.body.items.filter(deployment => {
+      // Don't delete the main bizobs-app
+      return deployment.metadata.name !== 'bizobs-app';
+    });
+
+    console.log(`[k8s-service-manager] 🎯 Found ${deploymentsToDelete.length} dynamic services to remove`);
+
+    // Delete all deployments
+    const deletePromises = [];
+    for (const deployment of deploymentsToDelete) {
+      const deploymentName = deployment.metadata.name;
+      
+      deletePromises.push(
+        Promise.all([
+          // Delete deployment
+          deploymentsApi.deleteNamespacedDeployment({
+            name: deploymentName,
+            namespace: NAMESPACE,
+            body: {
+              propagationPolicy: 'Background'
+            }
+          }).then(() => {
+            resetResults.deploymentsRemoved++;
+            resetResults.details.push(`✅ Deleted deployment: ${deploymentName}`);
+            console.log(`[k8s-service-manager] ✅ Deleted deployment: ${deploymentName}`);
+          }).catch(error => {
+            resetResults.errors.push(`Failed to delete deployment ${deploymentName}: ${error.message}`);
+            console.error(`[k8s-service-manager] ❌ Failed to delete deployment ${deploymentName}:`, error.message);
+          }),
+          
+          // Delete service
+          coreApi.deleteNamespacedService({
+            name: deploymentName,
+            namespace: NAMESPACE
+          }).then(() => {
+            resetResults.servicesRemoved++;
+            resetResults.details.push(`✅ Deleted service: ${deploymentName}`);
+            console.log(`[k8s-service-manager] ✅ Deleted service: ${deploymentName}`);
+          }).catch(error => {
+            // Service might not exist, that's okay
+            if (!error.message.includes('not found')) {
+              resetResults.errors.push(`Failed to delete service ${deploymentName}: ${error.message}`);
+              console.error(`[k8s-service-manager] ❌ Failed to delete service ${deploymentName}:`, error.message);
+            }
+          })
+        ])
+      );
+    }
+
+    // Wait for all deletions to complete
+    await Promise.all(deletePromises);
+
+    // Clear our local deployedServices cache
+    const localServicesCount = Object.keys(deployedServices).length;
+    for (const serviceName in deployedServices) {
+      delete deployedServices[serviceName];
+    }
+
+    resetResults.endTime = new Date().toISOString();
+    resetResults.localServicesCleaned = localServicesCount;
+    resetResults.success = true;
+
+    console.log(`[k8s-service-manager] ✅ Reset complete! Removed ${resetResults.deploymentsRemoved} deployments and ${resetResults.servicesRemoved} services`);
+    
+    return resetResults;
+
+  } catch (error) {
+    resetResults.endTime = new Date().toISOString();
+    resetResults.success = false;
+    resetResults.errors.push(`Reset failed: ${error.message}`);
+    console.error('[k8s-service-manager] ❌ Reset failed:', error);
+    return resetResults;
+  }
+}
+
 export default {
   deployK8sService,
   getK8sServiceInfo,
@@ -496,5 +597,6 @@ export default {
   cleanupJourneyServices,
   listDeployedServices,
   getK8sServiceHealth,
+  resetAllK8sServices,
   isK8sServiceReady
 };

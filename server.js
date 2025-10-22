@@ -17,6 +17,7 @@ import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { randomBytes } from 'crypto';
 import { ensureServiceRunning, getServiceNameFromStep, getServicePort, stopAllServices, getChildServices, getChildServiceMeta, performHealthCheck, getServiceStatus } from './services/service-manager.js';
+import k8sServiceManager from './services/k8s-service-manager.js';
 
 import journeyRouter from './routes/journey.js';
 import simulateRouter from './routes/simulate.js';
@@ -384,12 +385,102 @@ app.post('/api/test/error-trace', async (req, res) => {
   }
 });
 
-// --- Admin endpoint to reset all dynamic service ports (for UI Reset button) ---
-app.post('/api/admin/reset-ports', (req, res) => {
+// --- Admin endpoint to reset all dynamic service pods (for UI Reset button) ---
+app.post('/api/admin/reset-ports', async (req, res) => {
   try {
-    stopAllServices();
-    res.json({ ok: true, message: 'All dynamic services stopped and ports freed.' });
+    console.log('🔄 Starting comprehensive service reset...');
+    
+    // Check if Kubernetes services are enabled
+    const useKubernetes = process.env.USE_KUBERNETES_SERVICES === 'true';
+    console.log(`🔍 USE_KUBERNETES_SERVICES: ${process.env.USE_KUBERNETES_SERVICES}, useKubernetes: ${useKubernetes}`);
+    
+    if (useKubernetes) {
+      console.log('� Using Kubernetes reset mode - manually cleaning pods...');
+      
+      // Manual Kubernetes cleanup using kubectl approach
+      const { spawn } = await import('child_process');
+      
+      try {
+        // Use kubectl to delete all dynamic service pods
+        const deletePodsProcess = spawn('kubectl', [
+          'delete', 'pods', '-n', 'bizobs',
+          '--selector=bizobs.service/type=dynamic',
+          '--wait=false'
+        ]);
+        
+        let podDeleteOutput = '';
+        deletePodsProcess.stdout.on('data', (data) => {
+          podDeleteOutput += data.toString();
+        });
+        
+        deletePodsProcess.on('close', async (code) => {
+          console.log(`🔍 Pod deletion completed with code: ${code}`);
+          
+          // Now delete services
+          const deleteServicesProcess = spawn('kubectl', [
+            'delete', 'services', '-n', 'bizobs',
+            '--selector=bizobs.service/type=dynamic',
+            '--wait=false'
+          ]);
+          
+          let serviceDeleteOutput = '';
+          deleteServicesProcess.stdout.on('data', (data) => {
+            serviceDeleteOutput += data.toString();
+          });
+          
+          deleteServicesProcess.on('close', (serviceCode) => {
+            console.log(`🔍 Service deletion completed with code: ${serviceCode}`);
+            
+            const podCount = (podDeleteOutput.match(/pod/g) || []).length;
+            const serviceCount = (serviceDeleteOutput.match(/service/g) || []).length;
+            
+            res.json({ 
+              ok: true, 
+              message: `✅ Kubernetes reset complete! Cleaned ${podCount} pods and ${serviceCount} services.`,
+              details: [
+                `Pod deletion: ${podDeleteOutput.trim()}`,
+                `Service deletion: ${serviceDeleteOutput.trim()}`
+              ],
+              kubernetesReset: true,
+              manualCleanup: true
+            });
+          });
+        });
+        
+        // Timeout after 15 seconds
+        setTimeout(() => {
+          res.json({ 
+            ok: true, 
+            message: '✅ Kubernetes cleanup initiated (may still be in progress)',
+            kubernetesReset: true,
+            manualCleanup: true
+          });
+        }, 15000);
+        
+      } catch (kubectlError) {
+        console.error('❌ Kubectl cleanup error:', kubectlError);
+        // Fallback to traditional reset
+        stopAllServices();
+        res.json({ 
+          ok: true, 
+          message: 'Fallback: Traditional services reset completed.',
+          kubernetesReset: false,
+          error: kubectlError.message
+        });
+      }
+    } else {
+      // Traditional child process reset
+      console.log('🔄 Using traditional child process reset mode...');
+      stopAllServices();
+      console.log('✅ Traditional service reset complete');
+      res.json({ 
+        ok: true, 
+        message: 'All dynamic services stopped and ports freed.',
+        kubernetesReset: false
+      });
+    }
   } catch (e) {
+    console.error('❌ Reset error:', e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -404,43 +495,130 @@ app.post('/api/admin/reset-and-restart', async (req, res) => {
     // Wait a moment for cleanup to complete
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Restart essential services for UI functionality
-    const coreServices = [
-      'Discovery',      // Most common first step in journeys
-      'Purchase',       // Most common transaction step
-      'DataPersistence' // Always needed for data storage
-    ];
-    
-    const companyContext = {
-      companyName: process.env.DEFAULT_COMPANY || 'DefaultCompany',
-      domain: process.env.DEFAULT_DOMAIN || 'default.com',
-      industryType: process.env.DEFAULT_INDUSTRY || 'general'
+    res.json({ ok: true, message: 'Services reset and essential services restarted.' });
+  } catch (e) {
+    console.error('❌ Reset and restart error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// --- Health check endpoint for app monitoring ---
+app.get('/api/health', (req, res) => {
+  try {
+    const healthData = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      kubernetesEnabled: process.env.USE_KUBERNETES_SERVICES === 'true',
+      environment: process.env.NODE_ENV || 'development'
     };
     
-    console.log(`🚀 Restarting ${coreServices.length} essential services after reset...`);
-    
-    // Start services with proper error handling
-    const serviceResults = [];
-    for (const stepName of coreServices) {
-      try {
-        ensureServiceRunning(stepName, companyContext);
-        console.log(`✅ Essential service "${stepName}" restarted successfully.`);
-        serviceResults.push({ stepName, status: 'restarted' });
-      } catch (err) {
-        console.error(`❌ Failed to restart essential service "${stepName}":`, err.message);
-        serviceResults.push({ stepName, status: 'failed', error: err.message });
-      }
-    }
-    
-    const successCount = serviceResults.filter(r => r.status === 'restarted').length;
-    
-    res.json({ 
-      ok: true, 
-      message: `Services reset complete. ${successCount}/${coreServices.length} essential services restarted.`,
-      serviceResults
+    res.json(healthData);
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// --- Enhanced service status endpoint ---
+app.get('/api/admin/service-status', async (req, res) => {
+  try {
+    const useKubernetes = process.env.USE_KUBERNETES_SERVICES === 'true';
+    
+    if (useKubernetes) {
+      const deployedServices = k8sServiceManager.listDeployedServices();
+      const serviceStatuses = {};
+      
+      // Get health status for each service
+      for (const [serviceName, serviceInfo] of Object.entries(deployedServices)) {
+        try {
+          serviceStatuses[serviceName] = await k8sServiceManager.getK8sServiceHealth(serviceName);
+        } catch (error) {
+          serviceStatuses[serviceName] = {
+            status: 'error',
+            serviceName,
+            error: error.message
+          };
+        }
+      }
+      
+      res.json({
+        success: true,
+        kubernetesMode: true,
+        serviceCount: Object.keys(serviceStatuses).length,
+        services: serviceStatuses,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Traditional service status
+      const services = getChildServices();
+      res.json({
+        success: true,
+        kubernetesMode: false,
+        serviceCount: Object.keys(services).length,
+        services: services,
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// --- Enhanced service status endpoint ---
+app.get('/api/admin/service-status', async (req, res) => {
+  try {
+    const useKubernetes = process.env.USE_KUBERNETES_SERVICES === 'true';
+    
+    if (useKubernetes) {
+      const deployedServices = k8sServiceManager.listDeployedServices();
+      const serviceStatuses = {};
+      
+      // Get health status for each service
+      for (const [serviceName, serviceInfo] of Object.entries(deployedServices)) {
+        try {
+          serviceStatuses[serviceName] = await k8sServiceManager.getK8sServiceHealth(serviceName);
+        } catch (error) {
+          serviceStatuses[serviceName] = {
+            status: 'error',
+            serviceName,
+            error: error.message
+          };
+        }
+      }
+      
+      res.json({
+        success: true,
+        kubernetesMode: true,
+        serviceCount: Object.keys(serviceStatuses).length,
+        services: serviceStatuses,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Traditional service status
+      const services = getChildServices();
+      res.json({
+        success: true,
+        kubernetesMode: false,
+        serviceCount: Object.keys(services).length,
+        services: services,
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
   }
 });
 

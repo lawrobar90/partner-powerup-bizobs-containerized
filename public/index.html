@@ -280,8 +280,13 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
             <div id="journey-provider" class="text-xs text-dtyellow"></div>
           </div>
           <pre id="journey-output" class="mt-2 text-xs bg-black p-4 rounded-lg overflow-auto max-h-60 border border-dtcyan"></pre>
-          <div class="mt-4 flex flex-wrap gap-3">
-            <button id="reset-ports" onclick="resetServices()" class="bg-dtgray text-white font-semibold rounded-lg p-3 border border-dtcyan shadow-card hover:bg-dtpurple transition-all">🔄 Reset Services</button>
+          <div class="mt-4 flex flex-wrap gap-3 items-center">
+            <button id="reset-ports" onclick="resetServices()" class="bg-dtgray text-white font-semibold rounded-lg p-3 border border-dtcyan shadow-card hover:bg-dtpurple transition-all" title="Clear all services to start a new customer journey">🚀 New Customer Journey</button>
+            <div class="flex items-center gap-2 px-3 py-2 bg-dtdark border border-dtgray rounded-lg">
+              <span class="text-dtcyan text-sm">📊</span>
+              <span id="service-count-display" class="text-dtyellow text-sm">Checking services...</span>
+            </div>
+            <button onclick="refreshServiceStatus()" class="bg-dtdark text-dtcyan border border-dtgray rounded-lg px-3 py-2 text-sm hover:bg-dtgray transition-all">🔄 Refresh</button>
           </div>
           <div id="chain-status" class="mt-2 text-sm text-dtyellow"></div>
           <pre id="chained-trace-output" class="mt-2 text-xs bg-black p-3 rounded overflow-auto max-h-60"></pre>
@@ -982,7 +987,7 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
           // Update the Run Journey Simulation button to show services are ready
           const runBtn = document.getElementById('run-journey-simulation');
           if (runBtn) {
-            runBtn.innerHTML = '🚀 Run Journey Simulation (Services Ready!)';
+            runBtn.innerHTML = '🚀 Running Journey Simulation (Services Ready!)';
             runBtn.classList.add('ring-2', 'ring-dtcyan');
           }
           
@@ -1154,21 +1159,99 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
     };
 
     window.resetServices = async function() {
-      console.log('Reset button clicked');
+      console.log('🚀 Starting new customer journey setup...');
       const chainStatus = document.getElementById('chain-status');
+      const resetBtn = document.getElementById('reset-ports');
+      
       try {
-        chainStatus.textContent = 'Resetting dynamic services...';
+        // Disable button and show progress
+        resetBtn.disabled = true;
+        resetBtn.textContent = '🧹 Preparing...';
+        chainStatus.textContent = '🚀 Preparing for new customer journey...';
+        
         const res = await fetch('/api/admin/reset-ports', { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: '{}' 
         });
+        
         const json = await res.json();
-        chainStatus.textContent = json.ok ? '✅ Dynamic services reset.' : `❌ Reset failed: ${json.error || 'Unknown error'}`;
+        
+        if (json.ok) {
+          if (json.kubernetesReset) {
+            chainStatus.innerHTML = `✅ <strong>Ready for New Customer Journey!</strong><br/>
+              🎯 ${json.message}<br/>
+              💡 All services cleared - ready to simulate new customer paths<br/>
+              ${json.details ? json.details.slice(0,2).join('<br/>') : ''}
+              ${json.details && json.details.length > 2 ? `<br/>...and ${json.details.length - 2} more services cleaned` : ''}`;
+          } else {
+            chainStatus.textContent = `✅ Ready for new customer journey! ${json.message}`;
+          }
+          }
+          
+          // Auto-refresh service status after reset
+          setTimeout(() => {
+            refreshServiceStatus();
+          }, 2000);
+          
+        } else {
+          chainStatus.textContent = `❌ Setup failed: ${json.error || 'Unknown error'}`;
+        }
       } catch (e) {
-        chainStatus.textContent = `❌ Reset error: ${e.message}`;
+        chainStatus.textContent = `❌ Setup error: ${e.message}`;
+        console.error('New customer journey setup error:', e);
+      } finally {
+        // Re-enable button
+        resetBtn.disabled = false;
+        resetBtn.textContent = '🚀 New Customer Journey';
       }
     };
+
+    // Health monitoring function
+    window.refreshServiceStatus = async function() {
+      try {
+        const res = await fetch('/api/admin/service-status');
+        const status = await res.json();
+        
+        if (status.success) {
+          const statusElement = document.getElementById('service-count-display');
+          if (statusElement) {
+            statusElement.textContent = `${status.serviceCount} active services (${status.kubernetesMode ? 'K8s' : 'Local'})`;
+          }
+          
+          console.log(`📊 Service Status: ${status.serviceCount} services running (${status.kubernetesMode ? 'Kubernetes' : 'Local'} mode)`);
+        }
+      } catch (e) {
+        console.warn('Could not refresh service status:', e.message);
+      }
+    };
+
+    // App health monitoring
+    window.checkAppHealth = async function() {
+      try {
+        const res = await fetch('/api/health');
+        const health = await res.json();
+        
+        if (health.status === 'healthy') {
+          console.log('💚 App health check: HEALTHY');
+          return true;
+        } else {
+          console.warn('⚠️ App health check: UNHEALTHY', health);
+          return false;
+        }
+      } catch (e) {
+        console.error('❌ App health check failed:', e.message);
+        return false;
+      }
+    };
+
+    // Auto health monitoring (every 30 seconds)
+    setInterval(async () => {
+      const isHealthy = await checkAppHealth();
+      if (isHealthy) {
+        refreshServiceStatus();
+      }
+    }, 30000);
 
     // Handle generation method change
     document.getElementById('generationMethod').addEventListener('change', (e) => {
@@ -2088,7 +2171,7 @@ ERROR SIMULATION (Important):
 
       // Update button text to show they're ready
       runChainedBtnLocal.innerHTML = '🔗 Run Distributed Flow (Ready)';
-      runJourneySimBtnLocal.innerHTML = '🚀 Run Journey Simulation (Ready)';
+      runJourneySimBtnLocal.innerHTML = '🚀 Running Journey Simulation (Ready)';
 
       console.log('Flow buttons are now enabled and ready! (safe mode)');
 

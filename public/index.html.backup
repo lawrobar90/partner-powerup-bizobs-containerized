@@ -1883,7 +1883,7 @@ Respond with this EXACT JSON structure:\n{\n  "journey": {\n    "companyName": "
 
       // Update button text to show they're ready
       runChainedBtnLocal.innerHTML = '🔗 Run Distributed Flow (Ready)';
-      runJourneySimBtnLocal.innerHTML = '🚀 Run Journey Simulation (Ready)';
+      runJourneySimBtnLocal.innerHTML = '🚀 Running Journey Simulation (Ready)';
 
       console.log('Flow buttons are now enabled and ready! (safe mode)');
 
