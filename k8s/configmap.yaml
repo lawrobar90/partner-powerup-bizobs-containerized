@@ -6,6 +6,7 @@ metadata:
 data:
   NODE_ENV: "production"
   PORT: "8080"
+  USE_KUBERNETES_SERVICES: "true"
   DT_SERVICE_NAME: "BizObs-MainServer"
   DT_APPLICATION_NAME: "BizObs-CustomerJourney"
   DT_TAGS: "app=BizObs environment=production company=acebox"

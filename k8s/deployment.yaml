@@ -17,6 +17,7 @@ spec:
         app: bizobs-app
         component: main-server
     spec:
+      serviceAccountName: bizobs-service-manager
       containers:
       - name: bizobs
         image: bizobs-app:latest

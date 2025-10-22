@@ -2,8 +2,46 @@ import express from 'express';
 import http from 'http';
 import crypto, { randomBytes } from 'crypto';
 import { ensureServiceRunning, getServicePort, getServiceNameFromStep, isServiceReady } from '../services/service-manager.js';
+import { deployK8sService, getK8sServiceInfo, cleanupJourneyServices } from '../services/k8s-service-manager.js';
 
 const router = express.Router();
+
+// Configuration for service deployment mode
+const USE_KUBERNETES_SERVICES = process.env.USE_KUBERNETES_SERVICES === 'true' || process.env.USE_K8S_SERVICES === 'true';
+console.log(`[journey-sim] Service deployment mode: ${USE_KUBERNETES_SERVICES ? 'Kubernetes Pods' : 'Child Processes'}`);
+
+// Hybrid service management function that works with both approaches
+async function ensureServiceReady(stepName, companyContext) {
+  if (USE_KUBERNETES_SERVICES) {
+    console.log(`[journey-sim] 🚀 Deploying ${stepName} as Kubernetes service...`);
+    const serviceInfo = await deployK8sService(companyContext.serviceName || stepName, companyContext);
+    return {
+      serviceName: serviceInfo.serviceName,
+      serviceUrl: serviceInfo.serviceUrl,
+      isK8s: true,
+      ...serviceInfo
+    };
+  } else {
+    console.log(`[journey-sim] 🔧 Starting ${stepName} as child process...`);
+    const serviceInfo = await ensureServiceRunning(stepName, companyContext);
+    const port = serviceInfo.port || serviceInfo;
+    return {
+      serviceName: companyContext.serviceName || stepName,
+      port: port,
+      isK8s: false,
+      stepName: stepName
+    };
+  }
+}
+
+// Universal service calling function
+async function callService(serviceInfo, payload, incomingHeaders = {}) {
+  if (serviceInfo.isK8s) {
+    return await callK8sServiceWithRetry(serviceInfo.serviceName, serviceInfo.serviceUrl, payload, incomingHeaders);
+  } else {
+    return await callServiceWithRetry(serviceInfo.serviceName, serviceInfo.port, payload, incomingHeaders);
+  }
+}
 
 // Default journey steps
 const DEFAULT_JOURNEY_STEPS = [
@@ -397,6 +435,147 @@ async function callDynamicService(stepName, port, payload, incomingHeaders = {})
   });
 }
 
+// New Kubernetes-aware service calling function
+async function callK8sServiceWithRetry(serviceName, serviceUrl, payload, incomingHeaders = {}, maxRetries = 2, delayMs = 500) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await callK8sService(serviceName, serviceUrl, payload, incomingHeaders);
+    } catch (error) {
+      console.log(`[k8s-journey-sim] Service call attempt ${attempt}/${maxRetries} failed for ${serviceName}: ${error.message}`);
+      
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Wait before retry
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+async function callK8sService(serviceName, serviceUrl, payload, incomingHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    // Parse the service URL
+    const url = new URL(serviceUrl);
+    
+    // Build outgoing headers by preserving tracing headers when present
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-correlation-id': incomingHeaders['x-correlation-id'] || payload.correlationId || '',
+      'Host': url.hostname // Important for Kubernetes service resolution
+    };
+
+    // Helper to ensure a valid W3C traceparent (version-00)
+    function ensureTraceparent(hdrs, correlationId) {
+      // If already provided, validate and return it
+      if (hdrs['traceparent']) {
+        const tp = hdrs['traceparent'];
+        // Basic W3C traceparent validation: 00-{32hex}-{16hex}-{2hex}
+        if (/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/i.test(tp)) {
+          return tp;
+        }
+        console.warn(`[k8s-journey-sim] Invalid traceparent format: ${tp}, generating new one`);
+      }
+      
+      // Generate a new W3C traceparent
+      try {
+        const traceId = crypto.randomBytes(16).toString('hex');
+        const spanId = crypto.randomBytes(8).toString('hex');
+        // flags 01 = sampled
+        const traceparent = `00-${traceId}-${spanId}-01`;
+        console.log(`[k8s-journey-sim] Generated new traceparent: ${traceparent} (correlationId: ${correlationId})`);
+        return traceparent;
+      } catch (e) {
+        // Fallback using timestamp + correlation ID for deterministic but unique IDs
+        const timestamp = Date.now().toString(16).padStart(16, '0');
+        const corrHash = correlationId ? crypto.createHash('md5').update(correlationId).digest('hex').slice(0, 16) : Math.random().toString(16).slice(2, 18).padEnd(16, '0');
+        const traceId = (timestamp + corrHash).slice(0, 32);
+        const spanId = Math.random().toString(16).slice(2, 18).padEnd(16, '0').slice(0, 16);
+        const fallbackTraceparent = `00-${traceId}-${spanId}-01`;
+        console.log(`[k8s-journey-sim] Fallback traceparent generated: ${fallbackTraceparent}`);
+        return fallbackTraceparent;
+      }
+    }
+
+    // Copy known tracing headers if present
+    if (incomingHeaders['traceparent']) headers['traceparent'] = incomingHeaders['traceparent'];
+    if (incomingHeaders['tracestate']) headers['tracestate'] = incomingHeaders['tracestate'];
+    if (incomingHeaders['x-dynatrace-trace-id']) headers['x-dynatrace-trace-id'] = incomingHeaders['x-dynatrace-trace-id'];
+    if (incomingHeaders['x-dynatrace-parent-span-id']) headers['x-dynatrace-parent-span-id'] = incomingHeaders['x-dynatrace-parent-span-id'];
+    if (incomingHeaders['uber-trace-id']) headers['uber-trace-id'] = incomingHeaders['uber-trace-id'];
+
+    // Ensure a traceparent exists so OneAgent and downstream services will join the trace
+    if (!headers['traceparent']) {
+      headers['traceparent'] = ensureTraceparent(incomingHeaders || {}, payload.correlationId);
+      // also set Dynatrace header to help trace correlation (value = trace id portion)
+      try {
+        const tpParts = headers['traceparent'].split('-');
+        if (tpParts.length >= 2 && !headers['x-dynatrace-trace-id']) headers['x-dynatrace-trace-id'] = tpParts[1];
+      } catch (e) {}
+    }
+
+    // Add business context headers for better Dynatrace visibility
+    if (payload.companyName) headers['x-business-company'] = payload.companyName;
+    if (payload.domain) headers['x-business-domain'] = payload.domain;
+    if (payload.industryType) headers['x-business-industry'] = payload.industryType;
+    if (payload.customerId) headers['x-business-customer-id'] = payload.customerId;
+    if (payload.journeyId) headers['x-business-journey-id'] = payload.journeyId;
+    if (payload.stepName) headers['x-business-step'] = payload.stepName;
+    if (payload.stepIndex) headers['x-business-step-index'] = payload.stepIndex.toString();
+    
+    // Add customer profile info for business observability
+    if (payload.customerProfile?.userId) headers['x-customer-user-id'] = payload.customerProfile.userId;
+    if (payload.customerProfile?.customerTier) headers['x-customer-tier'] = payload.customerProfile.customerTier;
+
+    console.log(`[k8s-journey-sim] Calling Kubernetes service ${serviceName} at ${serviceUrl} with trace headers: traceparent=${headers['traceparent']?.substring(0, 20)}...`);
+    
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 8080,
+      path: '/process',
+      method: 'POST',
+      headers,
+      timeout: 30000
+    };
+
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          console.log(`[k8s-journey-sim] Response from ${serviceName}: ${res.statusCode} - ${data.substring(0, 200)}...`);
+          
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            const response = JSON.parse(data);
+            resolve(response);
+          } else {
+            reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+          }
+        } catch (parseError) {
+          console.error(`[k8s-journey-sim] Failed to parse response from ${serviceName}:`, parseError.message);
+          reject(parseError);
+        }
+      });
+    });
+    
+    req.on('error', (err) => {
+      console.error(`[k8s-journey-sim] Request error to ${serviceName} at ${serviceUrl}:`, err.message);
+      reject(err);
+    });
+    
+    req.on('timeout', () => {
+      console.error(`[k8s-journey-sim] Request timeout to ${serviceName} at ${serviceUrl}`);
+      req.destroy();
+      reject(new Error(`Timeout calling ${serviceName} at ${serviceUrl}`));
+    });
+    
+    const payloadString = JSON.stringify(payload);
+    console.log(`[k8s-journey-sim] Sending to ${serviceName}:`, payloadString);
+    req.write(payloadString);
+    req.end();
+  });
+}
+
 // Simulate journey
 router.post('/simulate-journey', async (req, res) => {
   console.log('[journey-sim] Route handler called');
@@ -597,11 +776,11 @@ router.post('/simulate-journey', async (req, res) => {
       }
       
       // Ensure first service is up with correct company context
-      const firstServiceInfo = await ensureServiceRunning(first.stepName, { ...companyContext, stepName: first.stepName, serviceName: first.serviceName });
-      const firstPort = firstServiceInfo.port || firstServiceInfo; // Handle both old and new format
+      const firstServiceInfo = await ensureServiceReady(first.stepName, { ...companyContext, stepName: first.stepName, serviceName: first.serviceName });
+      const firstPort = firstServiceInfo.port; // For backward compatibility
       const actualServiceName = first.serviceName || getServiceNameFromStep(first.stepName);
       
-      console.log(`[journey-sim] [chained] Calling first service ${actualServiceName} on port ${firstPort}`);
+      console.log(`[journey-sim] [chained] Calling first service ${actualServiceName} via ${firstServiceInfo.isK8s ? 'Kubernetes' : 'localhost'}`);
       
       // Create step-specific payload for chained execution - ONLY include current step data
       const firstStepInfo = errorPlannedSteps[0];
@@ -655,7 +834,7 @@ router.post('/simulate-journey', async (req, res) => {
       
       console.log(`[journey-sim] [chained] Step-specific payload for first service:`, JSON.stringify(chainedPayload, null, 2));
       
-      const chainedResult = await callServiceWithRetry(first.stepName, firstPort, chainedPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
+      const chainedResult = await callService(firstServiceInfo, chainedPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
       
       if (chainedResult) {
         journeyResults.push({
@@ -680,8 +859,8 @@ router.post('/simulate-journey', async (req, res) => {
         
         const serviceName = payloadServiceName || getServiceNameFromStep(stepName);
         // Ensure service is up with correct company context prior to call
-        const serviceInfo = await ensureServiceRunning(stepName, { ...companyContext, stepName, serviceName });
-        const servicePort = serviceInfo.port || serviceInfo; // Handle both old and new format
+        const serviceInfo = await ensureServiceReady(stepName, { ...companyContext, stepName, serviceName });
+        const servicePort = serviceInfo.port; // For backward compatibility
         
         try {
           // Create step-specific payload with ONLY current step data
@@ -727,7 +906,7 @@ router.post('/simulate-journey', async (req, res) => {
             provider: currentPayload.provider || 'unknown'
           };
 
-          const stepResult = await callServiceWithRetry(stepName, servicePort, stepPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
+          const stepResult = await callService(serviceInfo, stepPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
           
           const isFailed = stepResult?.status === 'failed' || (stepResult?.httpStatus && stepResult.httpStatus >= 400);
           journeyResults.push({
@@ -769,6 +948,15 @@ router.post('/simulate-journey', async (req, res) => {
       sources: currentPayload.sources,
       provider: currentPayload.provider
     };
+    
+    // Cleanup Kubernetes services if using K8s mode
+    if (USE_KUBERNETES_SERVICES && currentPayload.journeyId) {
+      console.log(`[journey-sim] 🧹 Initiating cleanup for journey ${currentPayload.journeyId}...`);
+      // Don't await - let cleanup happen in background
+      cleanupJourneyServices(currentPayload.journeyId)
+        .then(count => console.log(`[journey-sim] ✅ Cleaned up ${count} services for journey ${currentPayload.journeyId}`))
+        .catch(error => console.error(`[journey-sim] ❌ Cleanup failed for journey ${currentPayload.journeyId}:`, error.message));
+    }
     
     res.json({
       success: true,
