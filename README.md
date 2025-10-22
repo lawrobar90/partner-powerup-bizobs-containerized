@@ -36,31 +36,32 @@ This is the containerized version of the BizObs Partner PowerUp application, fea
 
 ## 🚀 Quick Start
 
-### Option 1: Kubernetes (K3s) Deployment (Recommended)
+### 🆕 Fresh ACE-box Instance (Recommended)
 
 ```bash
-# Clone the repository
+# One-command installation from GitHub
+curl -sSL https://raw.githubusercontent.com/lawrobar90/partner-powerup-bizobs-containerized/main/start-server.sh | bash
+
+# Or manually:
 git clone https://github.com/lawrobar90/partner-powerup-bizobs-containerized.git
 cd partner-powerup-bizobs-containerized
-
-# Deploy to Kubernetes
-./deploy.sh k8s
-
-# Or use the traditional start script
 ./start-server.sh
 ```
 
-### Option 2: Docker Compose Deployment
+### 🔧 Existing Setup - Universal Deployment
 
 ```bash
-# Deploy with Docker Compose
+# For Kubernetes (K3s)
+./deploy.sh k8s
+
+# For Docker Compose  
 ./deploy.sh docker
 
-# Or manually
-docker-compose up -d --build
+# For hybrid deployment
+./deploy.sh hybrid
 ```
 
-### Option 3: Local Development
+### 💻 Local Development
 
 ```bash
 # Install dependencies

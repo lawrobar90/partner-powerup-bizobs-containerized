@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # BizObs Partner PowerUp Containerized K3s Deployment Script
-# Deploys the Partner PowerUp BizObs App using Kubernetes (K3s) from current directory
+# FOR FRESH ACE-BOX INSTANCES - Downloads and deploys from GitHub
 # Revolutionary microservices architecture with dynamic service discovery
 
 set -e
@@ -16,7 +16,8 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-APP_DIR="$(pwd)"
+REPO_URL="https://github.com/lawrobar90/partner-powerup-bizobs-containerized.git"
+APP_DIR="partner-powerup-bizobs-containerized"
 APP_PORT="8080"
 NAMESPACE="bizobs"
 APP_NAME="bizobs-app"
@@ -25,7 +26,7 @@ IMAGE_TAG="latest"
 
 echo -e "${PURPLE}🚀 BizObs Partner PowerUp Containerized K3s Deployment${NC}"
 echo -e "${PURPLE}====================================================${NC}"
-echo -e "${CYAN}📁 Working Directory: $APP_DIR${NC}"
+echo -e "${CYAN}📁 Repository: $REPO_URL${NC}"
 echo -e "${CYAN}🌐 Namespace: $NAMESPACE${NC}"
 echo -e "${CYAN}🔧 Port: $APP_PORT${NC}"
 echo ""
@@ -154,6 +155,12 @@ echo ""
 print_step "2. Clean Up Previous Deployment"
 echo "🧹 Removing any existing deployment..."
 
+# Remove existing directory
+if [ -d "$APP_DIR" ]; then
+    echo "   Removing existing $APP_DIR directory..."
+    rm -rf "$APP_DIR"
+fi
+
 # Delete existing K8s resources
 if kubectl get namespace $NAMESPACE >/dev/null 2>&1; then
     echo "   Removing existing Kubernetes resources..."
@@ -167,6 +174,16 @@ if kubectl get namespace $NAMESPACE >/dev/null 2>&1; then
 fi
 
 echo -e "${GREEN}✅ Cleanup completed${NC}"
+echo ""
+
+print_step "3. Clone BizObs Repository"
+echo "📥 Cloning the latest BizObs application..."
+echo "   Repository: $REPO_URL"
+
+git clone "$REPO_URL"
+cd "$APP_DIR"
+
+echo -e "${GREEN}✅ Repository cloned successfully${NC}"
 echo ""
 
 print_step "3. Verify Application Files"
@@ -191,7 +208,29 @@ fi
 echo -e "${GREEN}✅ Application files verified${NC}"
 echo ""
 
-print_step "4. Build Docker Image"
+print_step "4. Verify Application Files"
+echo "📋 Checking application structure..."
+
+# Check if we're in the right directory
+if [[ ! -f "server.js" ]]; then
+    echo -e "${RED}❌ server.js not found. Repository may be incomplete.${NC}"
+    exit 1
+fi
+
+if [[ ! -d "k8s" ]]; then
+    echo -e "${RED}❌ k8s directory not found. Repository may be incomplete.${NC}"
+    exit 1
+fi
+
+if [[ ! -f "Dockerfile" ]]; then
+    echo -e "${RED}❌ Dockerfile not found. Repository may be incomplete.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Application files verified${NC}"
+echo ""
+
+print_step "5. Build Docker Image"
 echo "🔨 Building Docker image for K3s..."
 
 # Generate timestamp for unique image tag
@@ -210,7 +249,7 @@ docker save ${APP_NAME}:${IMAGE_TAG} | sudo k3s ctr images import -
 echo -e "${GREEN}✅ Docker image built and imported to K3s${NC}"
 echo ""
 
-print_step "5. Deploy to Kubernetes"
+print_step "6. Deploy to Kubernetes"
 echo "☸️  Deploying BizObs to K3s cluster..."
 
 # Apply all manifests
@@ -219,11 +258,11 @@ kubectl apply -f k8s/
 echo -e "${GREEN}✅ Kubernetes resources deployed${NC}"
 echo ""
 
-print_step "6. Pod Health Check"
+print_step "7. Pod Health Check"
 wait_for_pod
 echo ""
 
-print_step "7. Service Health Check"
+print_step "8. Service Health Check"
 SERVER_IP=$(get_server_ip)
 
 # Auto-detect training session ID for URLs
@@ -236,7 +275,7 @@ HEALTH_URL="$NODEPORT_URL$HEALTH_ENDPOINT"
 wait_for_service "$HEALTH_URL"
 echo ""
 
-print_step "8. Deployment Status"
+print_step "9. Deployment Status"
 echo "📊 Checking deployment status..."
 
 # Check pod status
@@ -257,7 +296,7 @@ kubectl logs -n $NAMESPACE -l app=$APP_NAME --tail=10
 
 echo ""
 
-print_step "9. 🎉 REVOLUTIONARY MICROSERVICES DEPLOYMENT COMPLETE!"
+print_step "10. 🎉 REVOLUTIONARY MICROSERVICES DEPLOYMENT COMPLETE!"
 echo -e "${GREEN}=====================================================${NC}"
 echo ""
 echo -e "${PURPLE}🌐 BizObs Application URLs:${NC}"
