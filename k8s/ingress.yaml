@@ -17,4 +17,4 @@ spec:
           service:
             name: bizobs-app-service
             port:
-              number: 4000
+              number: 8080

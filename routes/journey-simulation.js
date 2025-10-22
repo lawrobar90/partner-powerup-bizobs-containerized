@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'http';
 import crypto, { randomBytes } from 'crypto';
-import { ensureServiceRunning, getServicePort, getServiceNameFromStep } from '../services/service-manager.js';
+import { ensureServiceRunning, getServicePort, getServiceNameFromStep, isServiceReady } from '../services/service-manager.js';
 
 const router = express.Router();
 
@@ -252,18 +252,10 @@ function generateDynamicServiceName(stepName, description = '', category = '', o
 
 // Call a service
 // Retry wrapper for service calls with readiness check
-async function callServiceWithRetry(stepName, port, payload, incomingHeaders = {}, maxRetries = 3, delayMs = 1000) {
+async function callServiceWithRetry(stepName, port, payload, incomingHeaders = {}, maxRetries = 2, delayMs = 500) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Check if service is ready before calling
-      const isReady = await isServiceReady(port, 2000);
-      if (!isReady && attempt < maxRetries) {
-        console.log(`[journey-sim] Service ${stepName} on port ${port} not ready, attempt ${attempt}/${maxRetries}, retrying in ${delayMs}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        continue;
-      }
-      
-      return await callServiceWithRetry(stepName, port, payload, incomingHeaders);
+      return await callDynamicService(stepName, port, payload, incomingHeaders);
     } catch (error) {
       console.log(`[journey-sim] Service call attempt ${attempt}/${maxRetries} failed for ${stepName}: ${error.message}`);
       

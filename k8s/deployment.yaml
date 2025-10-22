@@ -22,7 +22,7 @@ spec:
         image: bizobs-app:latest
         imagePullPolicy: Never
         ports:
-        - containerPort: 4000
+        - containerPort: 8080
           name: http
         envFrom:
         - configMapRef:
@@ -36,7 +36,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 4000
+            port: 8080
           initialDelaySeconds: 60
           periodSeconds: 30
           timeoutSeconds: 10
@@ -44,7 +44,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /health
-            port: 4000
+            port: 8080
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
