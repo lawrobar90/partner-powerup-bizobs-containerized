@@ -296,7 +296,7 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
           <div class="grid grid-cols-1 gap-4">
             <div class="bg-dtgray bg-opacity-40 rounded-lg p-4">
               <label class="block text-sm font-medium text-dtcyan mb-2">Number of Customers</label>
-              <input id="customerCount" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan focus:ring-2 focus:ring-dtcyan transition-all" type="number" min="1" max="50" value="10" placeholder="Number of customers" />
+              <input id="customerCount" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan focus:ring-2 focus:ring-dtcyan transition-all" type="number" min="1" max="50" value="1" placeholder="Number of customers" />
               <p class="text-xs text-gray-400 mt-1">Run 1-50 customers through the generated journey</p>
             </div>
             <div class="bg-dtpurple bg-opacity-20 rounded-lg p-4 border border-dtpurple">
@@ -1039,22 +1039,19 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
       
       try {
         runJourneySimBtn.disabled = true;
-        runJourneySimBtn.textContent = '🔄 Simulating Journey...';
-        simStatus.textContent = 'Starting customer journey simulation...';
+        runJourneySimBtn.textContent = '🔄 Ensuring Services Ready...';
+        simStatus.textContent = 'Ensuring all services are ready for simulation...';
         
-        // Check if pre-deployment is enabled and services aren't already deployed
-        const preDeployCheckbox = document.getElementById('preDeployServices');
-        const shouldPreDeploy = preDeployCheckbox && preDeployCheckbox.checked;
-        
-        if (shouldPreDeploy && !runJourneySimBtn.textContent.includes('Services Ready')) {
-          simStatus.textContent = '🚀 Pre-deploying services for optimal performance...';
-          try {
-            await preDeployServices();
-            simStatus.textContent = '✅ Services pre-deployed! Starting journey simulation...';
-          } catch (preDeployError) {
-            console.warn('Pre-deployment failed, continuing with normal flow:', preDeployError);
-            simStatus.textContent = '⚠️ Pre-deployment failed, using normal startup flow...';
-          }
+        // ALWAYS pre-deploy services to prevent 502 errors
+        simStatus.textContent = '🚀 Pre-deploying services for optimal performance...';
+        try {
+          await preDeployServices();
+          simStatus.textContent = '✅ Services pre-deployed! Starting journey simulation...';
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for services to stabilize
+        } catch (preDeployError) {
+          console.warn('Pre-deployment failed, continuing with normal flow:', preDeployError);
+          simStatus.textContent = '⚠️ Pre-deployment failed, using normal startup flow...';
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Still wait a bit
         }
         
         // Create test journey if none exists
@@ -1110,31 +1107,55 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
         if (customerCount > 1) {
           requestBody.customers = customerCount;
         }
+
+        // Retry mechanism for API calls to handle transient errors
+        let retryCount = 0;
+        const maxRetries = 3;
+        let res, responseText, json;
         
-        const res = await fetch(endpoint, { 
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify(requestBody) 
-        });
-        
-        // Check if response is OK first
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
-        
-        // Get response text first, then parse JSON
-        const responseText = await res.text();
-        console.log('Journey simulation response text:', responseText);
-        
-        let json;
-        try {
-          json = JSON.parse(responseText);
-        } catch (jsonError) {
-          console.error('JSON parsing error in journey simulation:', jsonError);
-          throw new Error(`Invalid JSON response: ${jsonError.message}. Response: ${responseText.substring(0, 100)}...`);
-        }
-        
-        if (json.success) {
+        while (retryCount <= maxRetries) {
+          try {
+            simStatus.textContent = retryCount > 0 ? 
+              `🔄 Retrying journey simulation (attempt ${retryCount + 1}/${maxRetries + 1})...` : 
+              '🚀 Running customer journey simulation...';
+              
+            res = await fetch(endpoint, { 
+              method: 'POST', 
+              headers: { 'Content-Type': 'application/json' }, 
+              body: JSON.stringify(requestBody) 
+            });
+            
+            // Check if response is OK first
+            if (!res.ok) {
+              throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+            }
+            
+            // Get response text first, then parse JSON
+            responseText = await res.text();
+            console.log('Journey simulation response text:', responseText);
+            
+            try {
+              json = JSON.parse(responseText);
+              break; // Success! Exit retry loop
+            } catch (jsonError) {
+              console.error('JSON parsing error in journey simulation:', jsonError);
+              throw new Error(`Invalid JSON response: ${jsonError.message}. Response: ${responseText.substring(0, 100)}...`);
+            }
+            
+          } catch (error) {
+            console.warn(`Journey simulation attempt ${retryCount + 1} failed:`, error.message);
+            retryCount++;
+            
+            if (retryCount > maxRetries) {
+              throw error; // Final failure
+            }
+            
+            // Wait before retry with exponential backoff
+            const waitTime = Math.min(1000 * Math.pow(2, retryCount), 8000); // 2s, 4s, 8s max
+            simStatus.textContent = `⚠️ Attempt failed, retrying in ${waitTime/1000}s...`;
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+          }
+        }        if (json.success) {
           // Handle multiple customers response
           if (json.loadTestSummary && customerCount > 1) {
             const summary = json.loadTestSummary;
@@ -1772,9 +1793,15 @@ ERROR SIMULATION (Important):
         try {
           parsedResponse = JSON.parse(responseText);
         } catch (jsonError) {
-          // Handle non-JSON responses
+          // Handle non-JSON responses and provide better error handling
           console.error('JSON parsing error:', jsonError);
-          alert(`Response is not valid JSON. Please ensure you copied the complete JSON response from Copilot.\n\nError: ${jsonError.message}\n\nFirst 100 characters of response: ${responseText.substring(0, 100)}...`);
+          
+          // Check if this might be a truncated response
+          if (responseText.length > 5000 && !responseText.trim().endsWith('}')) {
+            alert(`⚠️ Response appears to be truncated!\n\nThe response is ${responseText.length} characters long but doesn't end with '}'. This often happens when Copilot's response exceeds character limits.\n\nTips to fix:\n1. Ask Copilot to provide a shorter response\n2. Request only essential fields\n3. Try asking for steps 1-3 first, then 4-6 separately\n\nError: ${jsonError.message}`);
+          } else {
+            alert(`Response is not valid JSON. Please ensure you copied the complete JSON response from Copilot.\n\nError: ${jsonError.message}\n\nFirst 200 characters of response: ${responseText.substring(0, 200)}...`);
+          }
           return;
         }
         
