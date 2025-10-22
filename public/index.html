@@ -972,7 +972,22 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
           body: JSON.stringify(payload)
         });
         
-        const result = await response.json();
+        // Check if response is OK first
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        // Get response text first, then parse JSON
+        const responseText = await response.text();
+        console.log('Pre-deploy response text:', responseText);
+        
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch (jsonError) {
+          console.error('JSON parsing error in pre-deploy:', jsonError);
+          throw new Error(`Invalid JSON response: ${jsonError.message}. Response: ${responseText.substring(0, 100)}...`);
+        }
         
         if (result.success) {
           preDeployStatus.innerHTML = `
@@ -1102,7 +1117,22 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
           body: JSON.stringify(requestBody) 
         });
         
-        const json = await res.json();
+        // Check if response is OK first
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        
+        // Get response text first, then parse JSON
+        const responseText = await res.text();
+        console.log('Journey simulation response text:', responseText);
+        
+        let json;
+        try {
+          json = JSON.parse(responseText);
+        } catch (jsonError) {
+          console.error('JSON parsing error in journey simulation:', jsonError);
+          throw new Error(`Invalid JSON response: ${jsonError.message}. Response: ${responseText.substring(0, 100)}...`);
+        }
         
         if (json.success) {
           // Handle multiple customers response
