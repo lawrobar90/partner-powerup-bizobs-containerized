@@ -230,14 +230,13 @@ echo ""
 print_step "6. Deploy to Kubernetes"
 echo "☸️  Deploying BizObs to K3s cluster..."
 
-# Apply namespace first and wait for it to be ready
+# Apply namespace first
 echo "   Creating namespace..."
 kubectl apply -f k8s/namespace.yaml
 
-# Wait for namespace to be ready
-echo "   Waiting for namespace to be ready..."
-kubectl wait --for=condition=Ready namespace/$NAMESPACE --timeout=60s || true
-sleep 5
+# Give namespace a moment to be created (K3s wait condition doesn't work reliably)
+echo "   Initializing namespace..."
+sleep 3
 
 # Apply remaining manifests
 echo "   Deploying application components..."
