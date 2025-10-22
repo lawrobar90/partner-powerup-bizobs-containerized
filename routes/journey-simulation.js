@@ -576,6 +576,104 @@ async function callK8sService(serviceName, serviceUrl, payload, incomingHeaders 
   });
 }
 
+// 🚀 REVOLUTIONARY: Pre-deploy services based on Copilot journey prompt
+router.post('/pre-deploy-services', async (req, res) => {
+  console.log('[journey-sim] 🚀 Pre-deployment route called');
+  try {
+    const { companyName, aiJourney, companyContext } = req.body || {};
+    
+    if (!companyName) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'companyName is required for pre-deployment' 
+      });
+    }
+
+    // Extract service names from AI journey or use defaults
+    let serviceNames = [];
+    if (aiJourney?.steps && Array.isArray(aiJourney.steps)) {
+      serviceNames = aiJourney.steps
+        .map(step => step.serviceName || step.stepName || step.name)
+        .filter(Boolean);
+    } else if (typeof aiJourney === 'string') {
+      // Parse service names from Copilot text using regex
+      const serviceMatches = aiJourney.match(/serviceName["\s]*:["\s]*([^"',\s}]+)/g);
+      if (serviceMatches) {
+        serviceNames = serviceMatches.map(match => 
+          match.replace(/serviceName["\s]*:["\s]*["']?([^"',\s}]+)["']?.*/, '$1')
+        );
+      }
+    }
+    
+    // Fallback to default journey steps if no services found
+    if (serviceNames.length === 0) {
+      serviceNames = DEFAULT_JOURNEY_STEPS;
+      console.log('[journey-sim] 🔄 Using default journey steps for pre-deployment');
+    }
+
+    console.log(`[journey-sim] 🎯 Pre-deploying ${serviceNames.length} services:`, serviceNames);
+
+    // Build company context
+    const fullCompanyContext = {
+      companyName,
+      domain: inferDomain({ companyName, ...companyContext }),
+      journeyId: `pre-deploy-${Date.now()}`,
+      ...companyContext
+    };
+
+    // Deploy all services in parallel for speed
+    const deploymentPromises = serviceNames.map(async (serviceName) => {
+      try {
+        console.log(`[journey-sim] 🚀 Pre-deploying service: ${serviceName}`);
+        const serviceContext = { ...fullCompanyContext, serviceName };
+        const serviceInfo = await ensureServiceReady(serviceName, serviceContext);
+        return {
+          serviceName,
+          status: 'deployed',
+          serviceInfo,
+          success: true
+        };
+      } catch (error) {
+        console.error(`[journey-sim] ❌ Failed to pre-deploy ${serviceName}:`, error.message);
+        return {
+          serviceName,
+          status: 'failed',
+          error: error.message,
+          success: false
+        };
+      }
+    });
+
+    // Wait for all deployments to complete
+    const results = await Promise.all(deploymentPromises);
+    const successful = results.filter(r => r.success);
+    const failed = results.filter(r => !r.success);
+
+    console.log(`[journey-sim] ✅ Pre-deployment complete: ${successful.length} successful, ${failed.length} failed`);
+
+    res.json({
+      success: true,
+      message: `Pre-deployed ${successful.length} services successfully`,
+      deployedServices: successful.map(r => r.serviceName),
+      failedServices: failed.map(r => ({ name: r.serviceName, error: r.error })),
+      summary: {
+        total: serviceNames.length,
+        successful: successful.length,
+        failed: failed.length
+      },
+      mode: USE_KUBERNETES_SERVICES ? 'kubernetes-pods' : 'child-processes'
+    });
+
+  } catch (error) {
+    console.error('[journey-sim] ❌ Pre-deployment failed:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      type: 'pre-deployment-error'
+    });
+  }
+});
+
 // Simulate journey
 router.post('/simulate-journey', async (req, res) => {
   console.log('[journey-sim] Route handler called');

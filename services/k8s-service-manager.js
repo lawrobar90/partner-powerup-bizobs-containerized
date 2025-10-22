@@ -141,7 +141,7 @@ function generateDeploymentManifest(serviceName, companyContext) {
               { name: 'DT_TAGS', value: `app=BizObs service=${serviceName} company=${companyContext.companyName || 'default'} journey=${companyContext.journeyId || 'unknown'}` },
               { name: 'DT_CUSTOM_PROP', value: `service=${serviceName};company=${companyContext.companyName || 'default'};journey=${companyContext.journeyId || 'unknown'}` }
             ],
-            command: ['node', 'services/service-runner.cjs'],
+            command: ['node', 'services/k8s-service-main.cjs'],
             args: [serviceName],
             resources: {
               requests: {
@@ -234,26 +234,71 @@ export async function deployK8sService(serviceName, companyContext = {}) {
   console.log(`[k8s-service-manager] 🚀 Deploying ${serviceName} as Kubernetes service...`);
   
   try {
-    // Check if service already exists
+    // Check if service already exists in memory cache
     if (deployedServices[serviceName]) {
-      console.log(`[k8s-service-manager] ♻️  Service ${serviceName} already deployed`);
+      console.log(`[k8s-service-manager] ♻️  Service ${serviceName} already deployed (cached)`);
       return deployedServices[serviceName];
     }
 
-    // Generate manifests
+    // Check if deployment actually exists in Kubernetes (for pre-deployed services)
+    try {
+      const existingDeployment = await k8sApi.readNamespacedDeployment({
+        name: deploymentName,
+        namespace: NAMESPACE
+      });
+      
+      if (existingDeployment) {
+        console.log(`[k8s-service-manager] ♻️  Service ${serviceName} found pre-deployed in Kubernetes`);
+        
+        // Add to cache for future use
+        const serviceInfo = {
+          serviceName,
+          deploymentName,
+          k8sServiceName: deploymentName,
+          serviceUrl: `http://${deploymentName}.${NAMESPACE}.svc.cluster.local:${SERVICE_PORT}`,
+          port: SERVICE_PORT,
+          companyContext,
+          deployedAt: new Date().toISOString(),
+          preDeployed: true
+        };
+        
+        deployedServices[serviceName] = serviceInfo;
+        serviceMetadata[serviceName] = companyContext;
+        
+        console.log(`[k8s-service-manager] ✅ Using pre-deployed service ${serviceName} at ${serviceInfo.serviceUrl}`);
+        return serviceInfo;
+      }
+    } catch (notFoundError) {
+      // Deployment doesn't exist yet, continue with normal deployment
+      console.log(`[k8s-service-manager] 📝 Service ${serviceName} not found, proceeding with new deployment`);
+    }
+
+    // Generate manifests for new deployment
     const deployment = generateDeploymentManifest(serviceName, companyContext);
     const service = generateServiceManifest(serviceName, companyContext);
     
     console.log(`[k8s-service-manager] 📝 Generated manifests for ${serviceName}`);
+    console.log(`[k8s-service-manager] 🔍 Debug: NAMESPACE = "${NAMESPACE}", typeof = ${typeof NAMESPACE}`);
+    console.log(`[k8s-service-manager] 📋 Deployment manifest namespace:`, deployment.metadata?.namespace);
+    console.log(`[k8s-service-manager] 📄 Full deployment manifest:`, JSON.stringify(deployment, null, 2));
     
     try {
-      // Create or update deployment
-      await k8sApi.createNamespacedDeployment(NAMESPACE, deployment);
+      // Create or update deployment (using object-style parameters for reliability)
+      console.log(`[k8s-service-manager] 📞 Calling createNamespacedDeployment with object-style params`);
+      await k8sApi.createNamespacedDeployment({
+        namespace: NAMESPACE,
+        body: deployment
+      });
       console.log(`[k8s-service-manager] ✅ Created deployment ${deploymentName}`);
     } catch (error) {
       if (error.statusCode === 409) {
         // Deployment already exists, update it
-        await k8sApi.replaceNamespacedDeployment(deploymentName, NAMESPACE, deployment);
+        console.log(`[k8s-service-manager] ♻️  Deployment exists, updating ${deploymentName}`);
+        await k8sApi.replaceNamespacedDeployment({
+          name: deploymentName,
+          namespace: NAMESPACE,
+          body: deployment
+        });
         console.log(`[k8s-service-manager] ♻️  Updated existing deployment ${deploymentName}`);
       } else {
         throw error;
@@ -261,13 +306,20 @@ export async function deployK8sService(serviceName, companyContext = {}) {
     }
 
     try {
-      // Create or update service  
-      await k8sCoreApi.createNamespacedService(NAMESPACE, service);
+      // Create or update service (using object-style parameters) 
+      await k8sCoreApi.createNamespacedService({
+        namespace: NAMESPACE,
+        body: service
+      });
       console.log(`[k8s-service-manager] ✅ Created service ${deploymentName}`);
     } catch (error) {
       if (error.statusCode === 409) {
         // Service already exists, update it
-        await k8sCoreApi.replaceNamespacedService(deploymentName, NAMESPACE, service);
+        await k8sCoreApi.replaceNamespacedService({
+          name: deploymentName,
+          namespace: NAMESPACE,
+          body: service
+        });
         console.log(`[k8s-service-manager] ♻️  Updated existing service ${deploymentName}`);
       } else {
         throw error;

@@ -294,6 +294,17 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
               <input id="customerCount" class="w-full p-3 rounded-lg bg-dtgray text-white border border-dtcyan focus:ring-2 focus:ring-dtcyan transition-all" type="number" min="1" max="50" value="10" placeholder="Number of customers" />
               <p class="text-xs text-gray-400 mt-1">Run 1-50 customers through the generated journey</p>
             </div>
+            <div class="bg-dtpurple bg-opacity-20 rounded-lg p-4 border border-dtpurple">
+              <div class="flex items-center space-x-3">
+                <input id="preDeployServices" type="checkbox" checked class="w-4 h-4 text-dtcyan bg-dtgray border-dtcyan rounded focus:ring-dtcyan focus:ring-2" />
+                <div>
+                  <label for="preDeployServices" class="text-sm font-medium text-dtcyan cursor-pointer">🚀 Pre-deploy Services</label>
+                  <p class="text-xs text-gray-400 mt-1">Deploy all services before running journey simulation for better performance</p>
+                </div>
+              </div>
+              <button id="pre-deploy-btn" onclick="preDeployServices()" class="mt-3 w-full bg-dtpurple hover:bg-dtblue text-white font-semibold rounded-lg p-2 shadow-card transition-all text-sm" title="Pre-deploy all services identified from the Copilot prompt">⚡ Pre-Deploy Services Now</button>
+              <div id="pre-deploy-status" class="mt-2 text-sm"></div>
+            </div>
             <div class="flex gap-3">
               <button id="run-journey-simulation" onclick="runJourneySimulation()" class="flex-1 bg-dtgreen hover:bg-dtcyan text-black font-semibold rounded-lg p-3 shadow-card transition-all" title="Run customers through the journey with OneAgent tracing">🚀 Run Journey Simulation</button>
             </div>
@@ -921,6 +932,76 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
       }
     };
 
+    // 🚀 REVOLUTIONARY: Pre-deploy services function
+    window.preDeployServices = async function() {
+      console.log('🚀 PRE-DEPLOY BUTTON CLICKED! 🚀');
+      const preDeployBtn = document.getElementById('pre-deploy-btn');
+      const preDeployStatus = document.getElementById('pre-deploy-status');
+      
+      try {
+        preDeployBtn.disabled = true;
+        preDeployBtn.textContent = '⚡ Pre-Deploying...';
+        preDeployStatus.innerHTML = '<span class="text-dtyellow">🚀 Starting service pre-deployment...</span>';
+        
+        // Get journey data for pre-deployment
+        const journeyData = lastJourney || {
+          companyName: 'PreDeployTest',
+          domain: 'predeploytest.com',
+          industryType: 'general'
+        };
+        
+        const payload = {
+          companyName: journeyData.companyName,
+          aiJourney: journeyData,
+          companyContext: {
+            domain: journeyData.domain,
+            industryType: journeyData.industryType || 'general'
+          }
+        };
+        
+        console.log('Pre-deployment payload:', payload);
+        
+        const response = await fetch('/api/journey-simulation/pre-deploy-services', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+          preDeployStatus.innerHTML = `
+            <span class="text-dtgreen">✅ Pre-deployment successful!</span><br>
+            <span class="text-xs text-gray-300">
+              Deployed: ${result.deployedServices?.join(', ') || 'Services ready'}<br>
+              Mode: ${result.mode}<br>
+              Total: ${result.summary?.successful || 0}/${result.summary?.total || 0} services ready
+            </span>
+          `;
+          
+          // Update the Run Journey Simulation button to show services are ready
+          const runBtn = document.getElementById('run-journey-simulation');
+          if (runBtn) {
+            runBtn.innerHTML = '🚀 Run Journey Simulation (Services Ready!)';
+            runBtn.classList.add('ring-2', 'ring-dtcyan');
+          }
+          
+          console.log('✅ Pre-deployment successful:', result);
+        } else {
+          preDeployStatus.innerHTML = `
+            <span class="text-red-400">❌ Pre-deployment failed: ${result.error}</span>
+          `;
+        }
+        
+      } catch (error) {
+        console.error('❌ Pre-deployment error:', error);
+        preDeployStatus.innerHTML = `<span class="text-red-400">❌ Error: ${error.message}</span>`;
+      } finally {
+        preDeployBtn.disabled = false;
+        preDeployBtn.textContent = '⚡ Pre-Deploy Services Now';
+      }
+    };
+
     window.runJourneySimulation = async function() {
       console.log('🔥 GREEN BUTTON CLICKED! 🔥');
       const runJourneySimBtn = document.getElementById('run-journey-simulation');
@@ -940,6 +1021,21 @@ Example: 'Create a B2B software trial signup journey including lead qualificatio
         runJourneySimBtn.disabled = true;
         runJourneySimBtn.textContent = '🔄 Simulating Journey...';
         simStatus.textContent = 'Starting customer journey simulation...';
+        
+        // Check if pre-deployment is enabled and services aren't already deployed
+        const preDeployCheckbox = document.getElementById('preDeployServices');
+        const shouldPreDeploy = preDeployCheckbox && preDeployCheckbox.checked;
+        
+        if (shouldPreDeploy && !runJourneySimBtn.textContent.includes('Services Ready')) {
+          simStatus.textContent = '🚀 Pre-deploying services for optimal performance...';
+          try {
+            await preDeployServices();
+            simStatus.textContent = '✅ Services pre-deployed! Starting journey simulation...';
+          } catch (preDeployError) {
+            console.warn('Pre-deployment failed, continuing with normal flow:', preDeployError);
+            simStatus.textContent = '⚠️ Pre-deployment failed, using normal startup flow...';
+          }
+        }
         
         // Create test journey if none exists
         if (!lastJourney) {
