@@ -1731,7 +1731,23 @@ ERROR SIMULATION (Important):
       }
 
       try {
-        const parsedResponse = JSON.parse(responseText);
+        // Check if response is valid JSON first
+        if (!responseText.trim()) {
+          alert('Empty response from Copilot');
+          return;
+        }
+        
+        // Try to parse the JSON
+        let parsedResponse;
+        try {
+          parsedResponse = JSON.parse(responseText);
+        } catch (jsonError) {
+          // Handle non-JSON responses
+          console.error('JSON parsing error:', jsonError);
+          alert(`Response is not valid JSON. Please ensure you copied the complete JSON response from Copilot.\n\nError: ${jsonError.message}\n\nFirst 100 characters of response: ${responseText.substring(0, 100)}...`);
+          return;
+        }
+        
         if (parsedResponse.journey && parsedResponse.journey.steps) {
           lastJourney = parsedResponse.journey;
           currentJourneyData = parsedResponse;
@@ -1907,12 +1923,13 @@ ERROR SIMULATION (Important):
         companyName: currentJourneyData.journey.companyName || 'DefaultCompany',
         domain: currentJourneyData.journey.domain || 'default.com',
         industryType: currentJourneyData.journey.industryType || 'general',
-        steps: currentJourneyData.journey.steps || []
+        steps: currentJourneyData.journey.steps || [],
+        additionalFields: additionalFields || []
       };
       const res = await fetch('/api/journey-simulation/simulate-batch-chained', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customers, thinkTimeMs, journey: journeyPayload })
+        body: JSON.stringify({ customers, thinkTimeMs, journey: journeyPayload, additionalFields: additionalFields || [] })
       });
       const json = await res.json();
       if (json.ok) {
