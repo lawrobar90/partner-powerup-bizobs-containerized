@@ -6,6 +6,42 @@
 
 set -e
 
+# Show help function
+show_help() {
+    echo "BizObs Partner PowerUp Containerized K3s Deployment Script"
+    echo ""
+    echo "Usage: $0 [OPTION]"
+    echo ""
+    echo "Options:"
+    echo "  --clean-only    Only perform cleanup without deploying"
+    echo "  --help          Show this help message"
+    echo "  (no options)    Perform full cleanup and fresh deployment"
+    echo ""
+    echo "Examples:"
+    echo "  $0                # Full fresh deployment"
+    echo "  $0 --clean-only   # Just cleanup existing deployment"
+    echo "  $0 --help         # Show this help"
+    exit 0
+}
+
+# Parse command line arguments
+CLEAN_ONLY=false
+if [[ $# -gt 0 ]]; then
+    case $1 in
+        --clean-only)
+            CLEAN_ONLY=true
+            ;;
+        --help)
+            show_help
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -24,12 +60,100 @@ APP_NAME="bizobs-app"
 HEALTH_ENDPOINT="/health"
 IMAGE_TAG="latest"
 
+# Function to print step headers
+print_step() {
+    echo -e "${CYAN}📋 STEP: $1${NC}"
+    echo -e "${CYAN}----------------------------------------${NC}"
+}
+
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to get server IP
+get_server_ip() {
+    # Try multiple methods to get IP
+    local ip=""
+    
+    # Try hostname -I first
+    if command_exists hostname; then
+        ip=$(hostname -I | awk '{print $1}' | tr -d '\n')
+    fi
+    
+    # Fallback to ip route
+    if [[ -z "$ip" ]]; then
+        ip=$(ip route get 8.8.8.8 | awk '{print $7; exit}' 2>/dev/null)
+    fi
+    
+    # Fallback to localhost
+    if [[ -z "$ip" ]]; then
+        ip="localhost"
+    fi
+    
+    echo "$ip"
+}
+
+# Function to perform complete cleanup
+perform_cleanup() {
+    echo -e "${PURPLE}🧹 BizObs Complete Cleanup${NC}"
+    echo -e "${PURPLE}=========================${NC}"
+    echo ""
+    
+    print_step "Complete System Cleanup"
+    echo "🧹 Performing comprehensive cleanup..."
+
+    # Remove existing directory
+    if [ -d "$APP_DIR" ]; then
+        echo "   Removing existing $APP_DIR directory..."
+        rm -rf "$APP_DIR"
+    fi
+
+    # Delete existing K8s resources
+    if kubectl get namespace $NAMESPACE >/dev/null 2>&1; then
+        echo "   Removing existing Kubernetes resources..."
+        kubectl delete namespace $NAMESPACE --ignore-not-found=true
+        
+        # Wait for namespace deletion
+        echo "   Waiting for namespace cleanup..."
+        while kubectl get namespace $NAMESPACE >/dev/null 2>&1; do
+            sleep 2
+        done
+    fi
+
+    # Clean up Docker images
+    echo "   Cleaning up existing Docker images..."
+    if docker images ${APP_NAME} --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "${APP_NAME}"; then
+        docker images ${APP_NAME} --format "{{.Repository}}:{{.Tag}}" | xargs -r docker rmi -f 2>/dev/null || true
+    fi
+
+    # Clean up K3s images
+    echo "   Cleaning up K3s container images..."
+    if sudo k3s ctr images ls 2>/dev/null | grep -q "${APP_NAME}"; then
+        sudo k3s ctr images ls | grep "${APP_NAME}" | awk '{print $1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true
+    fi
+
+    echo -e "${GREEN}✅ Complete cleanup completed successfully!${NC}"
+    echo ""
+    echo -e "${CYAN}🎯 System is now clean and ready for fresh deployment${NC}"
+    echo -e "${CYAN}   Run './start-server.sh' to deploy a fresh instance${NC}"
+    echo ""
+}
+
+# If cleanup-only mode, run cleanup and exit
+if [ "$CLEAN_ONLY" = true ]; then
+    perform_cleanup
+    exit 0
+fi
+
 echo -e "${PURPLE}🚀 BizObs Partner PowerUp Containerized K3s Deployment${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 echo -e "${CYAN}📁 Repository: $REPO_URL${NC}"
 echo -e "${CYAN}🌐 Namespace: $NAMESPACE${NC}"
 echo -e "${CYAN}🔧 Port: $APP_PORT${NC}"
 echo ""
+
+print_step "1. Environment Check"
 
 # Function to print step headers
 print_step() {
@@ -73,12 +197,29 @@ wait_for_pod() {
     echo -e "${YELLOW}⏳ Waiting for BizObs pod to be ready...${NC}"
     
     while [ $attempt -le $max_attempts ]; do
-        local ready_pods=$(kubectl get pods -n $NAMESPACE -l app=$APP_NAME --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
-        if [ "$ready_pods" -gt 0 ]; then
-            local pod_ready=$(kubectl get pods -n $NAMESPACE -l app=$APP_NAME -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-            if [ "$pod_ready" = "True" ]; then
-                echo -e "${GREEN}✅ Pod is ready!${NC}"
-                return 0
+        # Check if any pods exist
+        local pods=$(kubectl get pods -n $NAMESPACE -l app=$APP_NAME --no-headers 2>/dev/null | wc -l)
+        if [ "$pods" -gt 0 ]; then
+            # Check for image pull errors
+            local image_errors=$(kubectl get pods -n $NAMESPACE -l app=$APP_NAME -o jsonpath='{.items[*].status.containerStatuses[*].state.waiting.reason}' 2>/dev/null | grep -c "ErrImageNeverPull\|ImagePullBackOff\|ErrImagePull" || echo "0")
+            
+            if [ "$image_errors" -gt 0 ]; then
+                echo -e "${YELLOW}⚠️  Image pull issue detected, attempting to fix...${NC}"
+                # Force restart deployment to pick up the latest image
+                kubectl rollout restart deployment $APP_NAME -n $NAMESPACE >/dev/null 2>&1 || true
+                sleep 10
+                attempt=$((attempt + 1))
+                continue
+            fi
+            
+            # Check if pod is ready
+            local ready_pods=$(kubectl get pods -n $NAMESPACE -l app=$APP_NAME --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
+            if [ "$ready_pods" -gt 0 ]; then
+                local pod_ready=$(kubectl get pods -n $NAMESPACE -l app=$APP_NAME -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$pod_ready" = "True" ]; then
+                    echo -e "${GREEN}✅ Pod is ready!${NC}"
+                    return 0
+                fi
             fi
         fi
         
@@ -88,6 +229,9 @@ wait_for_pod() {
     done
     
     echo -e "${RED}❌ Pod failed to start within expected time${NC}"
+    echo -e "${YELLOW}Checking pod status for debugging:${NC}"
+    kubectl get pods -n $NAMESPACE -l app=$APP_NAME -o wide 2>/dev/null || true
+    kubectl describe pods -n $NAMESPACE -l app=$APP_NAME 2>/dev/null | tail -20 || true
     return 1
 }
 
@@ -152,8 +296,8 @@ fi
 
 echo ""
 
-print_step "2. Clean Up Previous Deployment"
-echo "🧹 Removing any existing deployment..."
+print_step "2. Complete Clean Up Previous Deployment"
+echo "🧹 Performing comprehensive cleanup..."
 
 # Remove existing directory
 if [ -d "$APP_DIR" ]; then
@@ -173,7 +317,19 @@ if kubectl get namespace $NAMESPACE >/dev/null 2>&1; then
     done
 fi
 
-echo -e "${GREEN}✅ Cleanup completed${NC}"
+# Clean up Docker images
+echo "   Cleaning up existing Docker images..."
+if docker images ${APP_NAME} --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "${APP_NAME}"; then
+    docker images ${APP_NAME} --format "{{.Repository}}:{{.Tag}}" | xargs -r docker rmi -f 2>/dev/null || true
+fi
+
+# Clean up K3s images
+echo "   Cleaning up K3s container images..."
+if sudo k3s ctr images ls 2>/dev/null | grep -q "${APP_NAME}"; then
+    sudo k3s ctr images ls | grep "${APP_NAME}" | awk '{print $1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true
+fi
+
+echo -e "${GREEN}✅ Complete cleanup completed${NC}"
 echo ""
 
 print_step "3. Clone BizObs Repository"
@@ -213,16 +369,28 @@ echo "🔨 Building Docker image for K3s..."
 
 # Generate timestamp for unique image tag
 TIMESTAMP=$(date +%s)
-IMAGE_TAG="v${TIMESTAMP}"
+TIMESTAMP_TAG="v${TIMESTAMP}"
 
 # Build the Docker image with timestamp tag
-echo "   Building image: ${APP_NAME}:${IMAGE_TAG}"
-docker build -t ${APP_NAME}:${IMAGE_TAG} .
-docker tag ${APP_NAME}:${IMAGE_TAG} ${APP_NAME}:latest
+echo "   Building image: ${APP_NAME}:${TIMESTAMP_TAG}"
+docker build -t ${APP_NAME}:${TIMESTAMP_TAG} .
 
-# Import image to K3s
-echo "   Importing image to K3s..."
-docker save ${APP_NAME}:${IMAGE_TAG} | sudo k3s ctr images import -
+# Tag as latest for Kubernetes deployment
+echo "   Tagging as latest: ${APP_NAME}:latest"
+docker tag ${APP_NAME}:${TIMESTAMP_TAG} ${APP_NAME}:latest
+
+# Import both tags to K3s to ensure deployment works
+echo "   Importing images to K3s..."
+docker save ${APP_NAME}:${TIMESTAMP_TAG} | sudo k3s ctr images import -
+docker save ${APP_NAME}:latest | sudo k3s ctr images import -
+
+# Verify images are available in K3s
+echo "   Verifying K3s images..."
+if sudo k3s ctr images ls | grep -q "${APP_NAME}:latest"; then
+    echo "   ✅ Image ${APP_NAME}:latest available in K3s"
+else
+    echo "   ⚠️  Warning: Image may not be properly imported"
+fi
 
 echo -e "${GREEN}✅ Docker image built and imported to K3s${NC}"
 echo ""
