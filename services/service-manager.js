@@ -228,6 +228,18 @@ export async function startChildService(serviceName, scriptPath, env = {}) {
       startTime: child.startTime,
       port 
     };
+    
+    // Start readiness check asynchronously without blocking
+    console.log(`[service-manager] Service ${serviceName} started on port ${port}, checking readiness asynchronously...`);
+    setTimeout(async () => {
+      const isReady = await isServiceReady(port, 3000);
+      if (isReady) {
+        console.log(`[service-manager] ✅ Service ${serviceName} is ready on port ${port}`);
+      } else {
+        console.log(`[service-manager] ⚠️ Service ${serviceName} still starting on port ${port}`);
+      }
+    }, 1000); // Check after 1 second delay
+    
     return child;
     
   } catch (error) {
@@ -296,13 +308,13 @@ export async function ensureServiceRunning(stepName, companyContext = {}) {
     if (existing && metaMismatch) {
       console.log(`[service-manager] Context change detected for ${serviceName}. Restarting service to apply new tags:`, JSON.stringify({ from: existingMeta, to: desiredMeta }));
       try { existing.kill('SIGTERM'); } catch {}
-      delete childServices[serviceName];
-      delete childServiceMeta[serviceName];
-      // Free up the port using port manager
-      const meta = childServiceMeta[serviceName];
+      // Free up the port using port manager BEFORE deleting metadata
+      const meta = existingMeta;
       if (meta && meta.port) {
         portManager.releasePort(meta.port, serviceName);
       }
+      delete childServices[serviceName];
+      delete childServiceMeta[serviceName];
     }
     console.log(`[service-manager] Service ${serviceName} not running, starting it for company: ${companyName}...`);
     // Try to start with existing service file, fallback to dynamic service

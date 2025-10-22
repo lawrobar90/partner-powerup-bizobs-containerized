@@ -251,6 +251,32 @@ function generateDynamicServiceName(stepName, description = '', category = '', o
 }
 
 // Call a service
+// Retry wrapper for service calls with readiness check
+async function callServiceWithRetry(stepName, port, payload, incomingHeaders = {}, maxRetries = 3, delayMs = 1000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Check if service is ready before calling
+      const isReady = await isServiceReady(port, 2000);
+      if (!isReady && attempt < maxRetries) {
+        console.log(`[journey-sim] Service ${stepName} on port ${port} not ready, attempt ${attempt}/${maxRetries}, retrying in ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+      
+      return await callServiceWithRetry(stepName, port, payload, incomingHeaders);
+    } catch (error) {
+      console.log(`[journey-sim] Service call attempt ${attempt}/${maxRetries} failed for ${stepName}: ${error.message}`);
+      
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Wait before retry
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 async function callDynamicService(stepName, port, payload, incomingHeaders = {}) {
   return new Promise((resolve, reject) => {
     // Build outgoing headers by preserving tracing headers when present
@@ -637,7 +663,7 @@ router.post('/simulate-journey', async (req, res) => {
       
       console.log(`[journey-sim] [chained] Step-specific payload for first service:`, JSON.stringify(chainedPayload, null, 2));
       
-      const chainedResult = await callDynamicService(first.stepName, firstPort, chainedPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
+      const chainedResult = await callServiceWithRetry(first.stepName, firstPort, chainedPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
       
       if (chainedResult) {
         journeyResults.push({
@@ -709,7 +735,7 @@ router.post('/simulate-journey', async (req, res) => {
             provider: currentPayload.provider || 'unknown'
           };
 
-          const stepResult = await callDynamicService(stepName, servicePort, stepPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
+          const stepResult = await callServiceWithRetry(stepName, servicePort, stepPayload, { 'x-correlation-id': correlationId, ...tracingHeaders });
           
           const isFailed = stepResult?.status === 'failed' || (stepResult?.httpStatus && stepResult.httpStatus >= 400);
           journeyResults.push({
@@ -1051,7 +1077,7 @@ router.post('/simulate-multiple-journeys', async (req, res) => {
               'x-correlation-id': correlationId
             };
 
-            const response = await callDynamicService(step.stepName, port, payload, traceHeaders);
+            const response = await callServiceWithRetry(step.stepName, port, payload, traceHeaders);
             const processingTime = Date.now() - stepStartTime;
 
             const stepResult = {
@@ -1395,7 +1421,7 @@ router.post('/simulate-batch-chained', async (req, res) => {
         console.log('[journey-sim] FINAL PAYLOAD additionalFields:', JSON.stringify(payload.additionalFields, null, 2));
         console.log('[journey-sim] FINAL PAYLOAD customerProfile:', JSON.stringify(payload.customerProfile, null, 2));
         console.log('[journey-sim] FINAL PAYLOAD traceMetadata:', JSON.stringify(payload.traceMetadata, null, 2));
-        const r = await callDynamicService(first.stepName, firstPort, payload, { 'x-correlation-id': correlationId });
+        const r = await callServiceWithRetry(first.stepName, firstPort, payload, { 'x-correlation-id': correlationId });
         const isFailed = r?.status === 'failed' || (r?.httpStatus && r.httpStatus >= 400);
         if (isFailed) failed++; else completed++;
         if (i < 5) results.push({ index: i + 1, status: isFailed ? 'failed' : 'completed', service: first.serviceName, httpStatus: r?.httpStatus, error: r?.error });
@@ -1496,7 +1522,7 @@ router.post('/simulate-single-step-journeys', async (req, res) => {
           
           console.log(`[journey-sim] SINGLE-STEP: Calling ${step.stepName} with correlation ID: ${stepCorrelationId}`);
           
-          const r = await callDynamicService(step.stepName, stepPort, payload, { 
+          const r = await callServiceWithRetry(step.stepName, stepPort, payload, { 
             'x-correlation-id': stepCorrelationId 
           });
           
