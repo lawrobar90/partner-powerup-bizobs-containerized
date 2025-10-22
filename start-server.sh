@@ -186,28 +186,6 @@ cd "$APP_DIR"
 echo -e "${GREEN}✅ Repository cloned successfully${NC}"
 echo ""
 
-print_step "3. Verify Application Files"
-echo "� Checking application structure..."
-
-# Check if we're in the right directory
-if [[ ! -f "server.js" ]]; then
-    echo -e "${RED}❌ server.js not found. Please run this script from the project root directory.${NC}"
-    exit 1
-fi
-
-if [[ ! -d "k8s" ]]; then
-    echo -e "${RED}❌ k8s directory not found. Please ensure Kubernetes manifests exist.${NC}"
-    exit 1
-fi
-
-if [[ ! -f "Dockerfile" ]]; then
-    echo -e "${RED}❌ Dockerfile not found. Please ensure Dockerfile exists.${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✅ Application files verified${NC}"
-echo ""
-
 print_step "4. Verify Application Files"
 echo "📋 Checking application structure..."
 
@@ -252,7 +230,17 @@ echo ""
 print_step "6. Deploy to Kubernetes"
 echo "☸️  Deploying BizObs to K3s cluster..."
 
-# Apply all manifests
+# Apply namespace first and wait for it to be ready
+echo "   Creating namespace..."
+kubectl apply -f k8s/namespace.yaml
+
+# Wait for namespace to be ready
+echo "   Waiting for namespace to be ready..."
+kubectl wait --for=condition=Ready namespace/$NAMESPACE --timeout=60s || true
+sleep 5
+
+# Apply remaining manifests
+echo "   Deploying application components..."
 kubectl apply -f k8s/
 
 echo -e "${GREEN}✅ Kubernetes resources deployed${NC}"
